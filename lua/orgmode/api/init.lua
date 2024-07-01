@@ -1,6 +1,7 @@
 ---@diagnostic disable: invisible
 local OrgFile = require('orgmode.api.file')
 local OrgHeadline = require('orgmode.api.headline')
+local Hyperlinks = require('orgmode.org.hyperlinks')
 local orgmode = require('orgmode')
 
 ---@class OrgApiRefileOpts
@@ -97,6 +98,19 @@ function OrgApi.refile(opts)
   end
 
   return true
+end
+
+--- Insert a link to a given location at the current cursor position
+---
+--- The expected format is
+--- <protocol>:<location>::<in_file_location>
+---
+--- If <in_file_location> is *<headline>, <headline> is used as prefilled description for the link.
+--- If <protocol> is id, this format can also be used to pass a prefilled description.
+--- @param link_location string
+--- @return boolean
+function OrgApi.insert_link(link_location)
+  Hyperlinks.insert_link(link_location)
 end
 
 return OrgApi

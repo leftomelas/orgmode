@@ -7,6 +7,7 @@ local config = require('orgmode.config')
 local Block = require('orgmode.files.elements.block')
 local Link = require('orgmode.org.hyperlinks.link')
 local Range = require('orgmode.files.elements.range')
+local Memoize = require('orgmode.utils.memoize')
 
 ---@class OrgFileMetadata
 ---@field mtime number
@@ -26,12 +27,11 @@ local Range = require('orgmode.files.elements.range')
 ---@field root TSNode
 local OrgFile = {}
 
-local memoize = utils.memoize(OrgFile, function(self)
-  return table.concat({
-    self.filename,
-    self.root and self.root:id() or '',
-    self.metadata.mtime,
-  }, '_')
+local memoize = Memoize:new(OrgFile, function(self)
+  return {
+    file = self,
+    id = table.concat({ 'file', self.root and self.root:id() or '' }, '_'),
+  }
 end)
 
 ---Constructor function, should not be used directly
@@ -101,6 +101,32 @@ end
 ---@return OrgFile
 function OrgFile:reload_sync(timeout)
   return self:reload():wait(timeout)
+end
+
+---@param action fun(...:OrgFile):any
+function OrgFile:update(action)
+  local is_same_file = self.filename == utils.current_file_path()
+  if is_same_file then
+    return Promise.resolve(action(self)):next(function(result)
+      vim.cmd(':silent! w')
+      return result
+    end)
+  end
+
+  local edit_file = utils.edit_file(self.filename)
+  edit_file.open()
+
+  return Promise.resolve(action(self)):next(function(result)
+    edit_file.close()
+    return self:reload():next(function()
+      return result
+    end)
+  end)
+end
+
+---@param action fun(...:OrgFile):any
+function OrgFile:update_sync(action, timeout)
+  return self:update(action):wait(timeout)
 end
 
 ---Check if file has been modified via 2 methods:
@@ -241,7 +267,7 @@ function OrgFile:apply_search(search, todo_only)
     local deadline = item:get_deadline_date()
     local scheduled = item:get_scheduled_date()
     local closed = item:get_closed_date()
-    local _, properties = item:get_properties()
+    local properties = item:get_properties()
 
     return search:check({
       props = vim.tbl_extend('keep', {}, properties, {
@@ -643,11 +669,25 @@ end
 
 memoize('get_category')
 --- Get the category name for this file
+--- If no category is set, the filename without extension is returned
 --- @return string
 function OrgFile:get_category()
   local category = self:_get_directive('category')
   if category then
     return category
+  end
+
+  return vim.fn.fnamemodify(self.filename, ':t:r') or ''
+end
+
+memoize('get_title')
+--- Get the title for this file
+--- If no title is set, the filename without extension is returned
+--- @return string
+function OrgFile:get_title()
+  local title = self:_get_directive('title')
+  if title then
+    return title
   end
 
   return vim.fn.fnamemodify(self.filename, ':t:r') or ''
@@ -703,6 +743,18 @@ function OrgFile:get_directive(directive_name)
   return self:_get_directive(directive_name)
 end
 
+--- Get headline id or create a new one if it doesn't exist
+--- @return string
+function OrgFile:id_get_or_create()
+  local id = self:get_property('id')
+  if id then
+    return id
+  end
+  local org_id = require('orgmode.org.id').new()
+  self:set_property('ID', org_id)
+  return org_id
+end
+
 ---@private
 ---@return string | nil
 function OrgFile:_get_directive(directive_name)
@@ -740,8 +792,10 @@ function OrgFile:_update_lines(lines, bufnr)
   self:parse()
   if bufnr then
     self.metadata.changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
-  else
-    self.metadata.mtime = vim.loop.fs_stat(self.filename).mtime.nsec
+  end
+  local stat = vim.loop.fs_stat(self.filename)
+  if stat then
+    self.metadata.mtime = stat.mtime.nsec
   end
   return self
 end

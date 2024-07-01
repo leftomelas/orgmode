@@ -108,6 +108,7 @@ end
 ---@param msg string|table
 ---@param additional_msg? table
 ---@param store_in_history? boolean
+---@return nil
 function utils.echo_warning(msg, additional_msg, store_in_history)
   return utils._echo(msg, 'WarningMsg', additional_msg, store_in_history)
 end
@@ -127,6 +128,7 @@ function utils.echo_info(msg, additional_msg, store_in_history)
 end
 
 ---@private
+---@return nil
 function utils._echo(msg, hl, additional_msg, store_in_history)
   vim.cmd([[redraw!]])
   if type(msg) == 'table' then
@@ -547,50 +549,6 @@ function utils.edit_file(filename)
   }
 end
 
-function utils.memoize(class, key_getter)
-  local memoizedMethods = {}
-  local methodsToMemoize = {}
-  local cache = setmetatable({}, { __mode = 'k' })
-
-  local function memoizedIndex(_, key)
-    local method = class[key]
-
-    if type(method) == 'function' and methodsToMemoize[key] and not memoizedMethods[key] then
-      memoizedMethods[key] = function(self, ...)
-        local top_key = key_getter(self)
-        local arg_key = key .. '_' .. table.concat({ ... }, '_')
-
-        if not cache[top_key] then
-          cache[top_key] = {}
-        end
-
-        if not cache[top_key][arg_key] then
-          local value = vim.F.pack_len(method(self, ...))
-          cache[top_key][arg_key] = value
-        end
-
-        local cached_value = cache[top_key][arg_key]
-
-        if cached_value then
-          local result = { pcall(vim.F.unpack_len, cached_value) }
-          if result[1] then
-            return unpack(result, 2)
-          end
-        end
-      end
-    end
-
-    return memoizedMethods[key] or method
-  end
-
-  class.__index = memoizedIndex
-
-  return function(method)
-    methodsToMemoize[method] = true
-    return true
-  end
-end
-
 function utils.has_version_10()
   local v = vim.version()
   return not vim.version.lt({ v.major, v.minor, v.patch }, { 0, 10, 0 })
@@ -609,6 +567,8 @@ function utils.find(entries, check_fn)
   return nil
 end
 
+---@param name string
+---@return string
 function utils.detect_filetype(name)
   local map = {
     ['emacs-lisp'] = 'lisp',
@@ -628,7 +588,7 @@ function utils.detect_filetype(name)
   if map[name] then
     return map[name]
   end
-  return nil
+  return name:lower()
 end
 
 return utils

@@ -180,19 +180,17 @@ function Capture:_refile_from_capture_buffer(opts)
 
   lines = opts.template:apply_properties_to_lines(lines)
 
-  self.files
-    :update_file(destination_file.filename, function(file)
-      if not destination_headline and opts.template.regexp then
-        local line = vim.fn.search(opts.template.regexp, 'ncw')
-        if line > 0 then
-          return vim.api.nvim_buf_set_lines(file:bufnr(), line, line, false, lines)
-        end
+  destination_file:update_sync(function(file)
+    if not destination_headline and opts.template.regexp then
+      local line = vim.fn.search(opts.template.regexp, 'ncw')
+      if line > 0 then
+        return vim.api.nvim_buf_set_lines(file:bufnr(), line, line, false, lines)
       end
+    end
 
-      local range = self:_get_destination_range_without_empty_lines(Range.from_line(target_line))
-      vim.api.nvim_buf_set_lines(file:bufnr(), range.start_line, range.end_line, false, lines)
-    end)
-    :wait()
+    local range = self:_get_destination_range_without_empty_lines(Range.from_line(target_line))
+    vim.api.nvim_buf_set_lines(file:bufnr(), range.start_line, range.end_line, false, lines)
+  end)
 
   if self.on_post_refile then
     self.on_post_refile(self, opts)
@@ -205,6 +203,7 @@ end
 ---Refile a headline from a regular org file (non-capture)
 ---@private
 ---@param opts OrgProcessRefileOpts
+---@return number
 function Capture:_refile_from_org_file(opts)
   local source_headline = opts.source_headline
   local source_file = source_headline.file
@@ -228,27 +227,22 @@ function Capture:_refile_from_org_file(opts)
     target_line = destination_headline:get_range().end_line
   end
 
-  local lines = opts.lines
-
-  if not lines then
-    lines = source_headline:get_lines()
-  end
+  local lines = source_headline:get_lines()
 
   if destination_headline or source_headline:get_level() > 1 then
     lines = self:_adapt_headline_level(source_headline, target_level, is_same_file)
   end
 
-  self.files
-    :update_file(destination_file.filename, function()
-      if is_same_file then
-        local item_range = source_headline:get_range()
-        return vim.cmd(string.format('silent! %d,%d move %s', item_range.start_line, item_range.end_line, target_line))
-      end
+  destination_file:update_sync(function(file)
+    if is_same_file then
+      local item_range = source_headline:get_range()
+      return vim.cmd(string.format('silent! %d,%d move %s', item_range.start_line, item_range.end_line, target_line))
+    end
 
-      local range = self:_get_destination_range_without_empty_lines(Range.from_line(target_line))
-      vim.api.nvim_buf_set_lines(0, range.start_line, range.end_line, false, lines)
-    end)
-    :wait()
+    local range = self:_get_destination_range_without_empty_lines(Range.from_line(target_line))
+    target_line = range.start_line
+    vim.api.nvim_buf_set_lines(0, range.start_line, range.end_line, false, lines)
+  end)
 
   if not is_same_file and source_file.filename == utils.current_file_path() then
     local item_range = source_headline:get_range()
@@ -256,7 +250,7 @@ function Capture:_refile_from_org_file(opts)
   end
 
   utils.echo_info(opts.message or ('Wrote %s'):format(destination_file.filename))
-  return true
+  return target_line + 1
 end
 
 ---@param headline OrgHeadline
@@ -279,41 +273,23 @@ function Capture:refile_file_headline_to_archive(headline)
   if not vim.loop.fs_stat(archive_location) then
     vim.fn.writefile({}, archive_location)
   end
-  local start_line = headline:get_range().start_line
-  local lines = headline:get_lines()
-  local properties_node = headline:get_properties()
-  local append_line = headline:get_append_line() - start_line
-  local indent = headline:get_indent()
-
-  local archive_props = {
-    ('%s:ARCHIVE_TIME: %s'):format(indent, Date.now():to_string()),
-    ('%s:ARCHIVE_FILE: %s'):format(indent, file.filename),
-    ('%s:ARCHIVE_CATEGORY: %s'):format(indent, headline:get_category()),
-    ('%s:ARCHIVE_TODO: %s'):format(indent, headline:get_todo() or ''),
-  }
-
-  if properties_node then
-    local front_lines = { unpack(lines, 1, append_line) }
-    local back_lines = { unpack(lines, append_line + 1, #lines) }
-    lines = vim.list_extend(front_lines, archive_props)
-    lines = vim.list_extend(lines, back_lines)
-  else
-    local front_lines = { unpack(lines, 1, append_line + 1) }
-    local back_lines = { unpack(lines, append_line + 2, #lines) }
-    table.insert(front_lines, ('%s:PROPERTIES:'):format(indent))
-    lines = vim.list_extend(front_lines, archive_props)
-    table.insert(lines, ('%s:END:'):format(indent))
-    lines = vim.list_extend(lines, back_lines)
-  end
 
   local destination_file = self.files:get(archive_location)
 
-  return self:_refile_from_org_file({
+  local target_line = self:_refile_from_org_file({
     source_headline = headline,
     destination_file = destination_file,
-    lines = lines,
     message = ('Archived to %s'):format(destination_file.filename),
   })
+
+  destination_file = self.files:get(archive_location)
+  destination_file:update(function(archive_file)
+    local archived_headline = archive_file:get_closest_headline({ target_line, 0 })
+    archived_headline:set_property('ARCHIVE_TIME', Date.now():to_string())
+    archived_headline:set_property('ARCHIVE_FILE', file.filename)
+    archived_headline:set_property('ARCHIVE_CATEGORY', headline:get_category())
+    archived_headline:set_property('ARCHIVE_TODO', headline:get_todo() or '')
+  end)
 end
 
 ---@param item OrgHeadline

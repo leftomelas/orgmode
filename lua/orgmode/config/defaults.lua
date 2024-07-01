@@ -1,6 +1,8 @@
 ---@class OrgDefaultConfig
 ---@field org_id_method 'uuid' | 'ts' | 'org'
 ---@field org_agenda_span 'day' | 'week' | 'month' | 'year' | number
+---@field org_log_repeat 'time' | 'note' | false
+---@field calendar { round_min_with_hours: boolean, min_big_step: number, min_small_step: number? }
 local DefaultConfig = {
   org_agenda_files = '',
   org_default_notes_file = '',
@@ -13,6 +15,10 @@ local DefaultConfig = {
   org_agenda_start_on_weekday = 1,
   org_agenda_start_day = nil, -- start from today + this modifier
   calendar_week_start_day = 1,
+  calendar = {
+    round_min_with_hours = true,
+    min_big_step = 15,
+  },
   org_capture_templates = {
     t = {
       description = 'Task',
@@ -34,6 +40,7 @@ local DefaultConfig = {
   org_hide_emphasis_markers = false,
   org_ellipsis = '...',
   org_log_done = 'time',
+  org_log_repeat = 'time',
   org_log_into_drawer = nil,
   org_highlight_latex_and_related = nil,
   org_custom_exports = {},
@@ -161,6 +168,7 @@ local DefaultConfig = {
       org_schedule = '<prefix>is',
       org_time_stamp = '<prefix>i.',
       org_time_stamp_inactive = '<prefix>i!',
+      org_toggle_timestamp_type = '<prefix>d!',
       org_insert_link = '<prefix>li',
       org_store_link = '<prefix>ls',
       org_clock_in = '<prefix>xi',
@@ -192,6 +200,9 @@ local DefaultConfig = {
     config_path = '$HOME/.emacs.d/init.el',
   },
   ui = {
+    folds = {
+      colored = true,
+    },
     menu = {
       handler = nil,
     },

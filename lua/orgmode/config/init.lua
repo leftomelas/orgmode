@@ -22,7 +22,7 @@ function Config:new(opts)
 end
 
 function Config:__index(key)
-  if self.opts[key] then
+  if self.opts[key] ~= nil then
     return self.opts[key]
   end
   return rawget(getmetatable(self), key)
@@ -397,7 +397,7 @@ function Config:setup_ts_predicates()
     if not text or vim.trim(text) == '' then
       return
     end
-    metadata['injection.language'] = utils.detect_filetype(text) or text:lower()
+    metadata['injection.language'] = utils.detect_filetype(text)
   end, { force = true })
 end
 

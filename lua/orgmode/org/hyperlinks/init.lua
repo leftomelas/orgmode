@@ -2,6 +2,7 @@ local org = require('orgmode')
 local utils = require('orgmode.utils')
 local fs = require('orgmode.utils.fs')
 local Url = require('orgmode.org.hyperlinks.url')
+local Link = require('orgmode.org.hyperlinks.link')
 local config = require('orgmode.config')
 local Hyperlinks = {
   stored_links = {},
@@ -173,17 +174,33 @@ end
 ---@param headline OrgHeadline
 ---@param path? string
 function Hyperlinks.get_link_to_headline(headline, path)
-  path = path or utils.current_file_path()
   local title = headline:get_title()
-  local id
+
   if config.org_id_link_to_org_use_id then
-    id = headline:id_get_or_create()
+    local id = headline:id_get_or_create()
+    if id then
+      return ('id:%s::*%s'):format(id, title)
+    end
   end
 
-  if not config.org_id_link_to_org_use_id or not id then
-    return ('file:%s::*%s'):format(path, title)
+  path = path or utils.current_file_path()
+  return ('file:%s::*%s'):format(path, title)
+end
+
+---@param file OrgFile
+---@param path? string
+function Hyperlinks.get_link_to_file(file, path)
+  local title = file:get_title()
+
+  if config.org_id_link_to_org_use_id then
+    local id = file:id_get_or_create()
+    if id then
+      return ('id:%s::*%s'):format(id, title)
+    end
   end
-  return ('id:%s  %s'):format(id, title)
+
+  path = path or file.filename
+  return ('file:%s::*%s'):format(path, title)
 end
 
 ---@param headline OrgHeadline
@@ -203,6 +220,59 @@ function Hyperlinks.autocomplete_links(arg_lead)
   end
 
   return vim.tbl_keys(Hyperlinks.stored_links)
+end
+
+---@return OrgLink|nil, table | nil
+function Hyperlinks.get_link_under_cursor()
+  local line = vim.fn.getline('.')
+  local col = vim.fn.col('.') or 0
+  return Link.at_pos(line, col)
+end
+
+function Hyperlinks.insert_link(link_location)
+  local selected_link = Link:new(link_location)
+  local desc = selected_link.url:get_target_value()
+
+  if selected_link.url:is_id() then
+    link_location = ('id:%s'):format(selected_link.url:get_id())
+  end
+
+  local link_description = vim.trim(vim.fn.OrgmodeInput('Description: ', desc or ''))
+
+  link_location = '[' .. vim.trim(link_location) .. ']'
+
+  if link_description ~= '' then
+    link_description = '[' .. link_description .. ']'
+  end
+
+  local insert_from
+  local insert_to
+  local target_col = #link_location + #link_description + 2
+
+  -- check if currently on link
+  local link, position = Hyperlinks.get_link_under_cursor()
+  if link and position then
+    insert_from = position.from - 1
+    insert_to = position.to + 1
+    target_col = target_col + position.from
+  else
+    local colnr = vim.fn.col('.')
+    insert_from = colnr
+    insert_to = colnr + 1
+    target_col = target_col + colnr
+  end
+
+  local linenr = vim.fn.line('.') or 0
+  local curr_line = vim.fn.getline(linenr)
+  local new_line = string.sub(curr_line, 0, insert_from)
+    .. '['
+    .. link_location
+    .. link_description
+    .. ']'
+    .. string.sub(curr_line, insert_to, #curr_line)
+
+  vim.fn.setline(linenr, new_line)
+  vim.fn.cursor(linenr, target_col)
 end
 
 return Hyperlinks

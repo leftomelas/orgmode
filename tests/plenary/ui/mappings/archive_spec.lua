@@ -11,6 +11,8 @@ describe('Archive', function()
     assert.are.same(vim.fn.glob(vim.fn.fnamemodify(file.filename, ':p:h') .. '/**/*.org_archive', false, 1, 1), {})
 
     vim.cmd([[exe "norm ,o$"]])
+    -- Pause to finish the archiving
+    vim.wait(50)
     assert.are.same({
       '* baz',
       '** foo',
@@ -28,6 +30,33 @@ describe('Archive', function()
       '  :ARCHIVE_CATEGORY: ' .. file:get_category(),
       '  :ARCHIVE_TODO: ',
       '  :END:',
+    }, vim.api.nvim_buf_get_lines(0, 0, -1, false))
+  end)
+
+  it('should set properties on top-level headline when refiling subtree', function()
+    local file = helpers.create_agenda_file({
+      '* foobar',
+      '** baz',
+      '* foo',
+    })
+
+    vim.cmd([[exe "norm ,o$"]])
+    -- Pause to finish the archiving
+    vim.wait(50)
+    assert.are.same({
+      '* foo',
+    }, vim.api.nvim_buf_get_lines(0, 0, -1, false))
+
+    vim.cmd(('edit %s'):format(file.filename .. '_archive'))
+    assert.are.same({
+      '* foobar',
+      '  :PROPERTIES:',
+      '  :ARCHIVE_TIME: ' .. Date.now():to_string(),
+      '  :ARCHIVE_FILE: ' .. file.filename,
+      '  :ARCHIVE_CATEGORY: ' .. file:get_category(),
+      '  :ARCHIVE_TODO: ',
+      '  :END:',
+      '** baz',
     }, vim.api.nvim_buf_get_lines(0, 0, -1, false))
   end)
 end)

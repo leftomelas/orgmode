@@ -12,9 +12,7 @@ local utils = require('orgmode.utils')
 local fs = require('orgmode.utils.fs')
 local Table = require('orgmode.files.elements.table')
 local EventManager = require('orgmode.events')
-local Promise = require('orgmode.utils.promise')
 local events = EventManager.event
-local Link = require('orgmode.org.hyperlinks.link')
 local Babel = require('orgmode.babel')
 
 ---@class OrgMappings
@@ -383,96 +381,103 @@ function OrgMappings:_todo_change_state(direction)
   local old_state = headline:get_todo()
   local was_done = headline:is_done()
   local changed = self:_change_todo_state(direction, true)
+
   if not changed then
     return
   end
-  local item = self.files:get_closest_headline()
 
-  local dispatchEvent = function()
-    EventManager.dispatch(events.TodoChanged:new(item, old_state, was_done))
+  local item = self.files:get_closest_headline()
+  EventManager.dispatch(events.TodoChanged:new(item, old_state, was_done))
+
+  local is_done = item:is_done() and not was_done
+  local is_undone = not item:is_done() and was_done
+
+  -- State was changed in the same group (TODO NEXT | DONE)
+  -- For example: Changed from TODO to NEXT
+  if not is_done and not is_undone then
     return item
   end
 
-  if not item:is_done() and not was_done then
-    return dispatchEvent()
-  end
-
-  local log_note = config.org_log_done == 'note'
-  local log_time = config.org_log_done == 'time'
-  local should_log_time = log_note or log_time
+  local prompt_done_note = config.org_log_done == 'note'
+  local log_closed_time = config.org_log_done == 'time'
   local indent = headline:get_indent()
 
-  local get_note = function(note)
-    if note == nil then
-      return
-    end
+  local closing_note_text = ('%s- CLOSING NOTE %s \\\\'):format(indent, Date.now():to_wrapped_string(false))
 
-    for i, line in ipairs(note) do
-      note[i] = indent .. '  ' .. line
-    end
+  local get_note = function(template)
+    return self.capture.closing_note:open():next(function(closing_note)
+      if closing_note == nil then
+        return
+      end
 
-    table.insert(note, 1, ('%s- CLOSING NOTE %s \\\\'):format(indent, Date.now():to_wrapped_string(false)))
-    return note
+      for i, line in ipairs(closing_note) do
+        closing_note[i] = indent .. '  ' .. line
+      end
+
+      return vim.list_extend({ template }, closing_note)
+    end)
   end
 
   local repeater_dates = item:get_repeater_dates()
-  if #repeater_dates == 0 then
-    if should_log_time and item:is_done() and not was_done then
-      headline:set_closed_date()
-      item = self.files:get_closest_headline()
 
-      if log_note then
-        dispatchEvent()
-        return self.capture.closing_note:open():next(function(note)
-          local valid_note = get_note(note)
-          if valid_note then
-            local append_line = headline:get_append_line()
-            vim.api.nvim_buf_set_lines(0, append_line, append_line, false, valid_note)
-          end
-        end)
+  -- No dates with a repeater. Add closed date and note if enabled.
+  if #repeater_dates == 0 then
+    local set_closed_date = prompt_done_note or log_closed_time
+    if set_closed_date then
+      if is_done then
+        headline:set_closed_date()
+      elseif is_undone then
+        headline:remove_closed_date()
       end
+      item = self.files:get_closest_headline()
     end
-    if should_log_time and not item:is_done() and was_done then
-      headline:remove_closed_date()
+
+    if is_undone or not prompt_done_note then
+      return item
     end
-    return dispatchEvent()
+
+    return get_note(closing_note_text):next(function(closing_note)
+      return item:add_note(closing_note)
+    end)
   end
 
   for _, date in ipairs(repeater_dates) do
     self:_replace_date(date:apply_repeater())
   end
-
   local new_todo = item:get_todo()
   self:_change_todo_state('reset')
-  local state_change = {
-    string.format('%s- State "%s" from "%s" [%s]', indent, new_todo, old_state, Date.now():to_string()),
-  }
 
-  dispatchEvent()
-  return Promise.resolve()
-    :next(function()
-      if not log_note then
-        return state_change
-      end
+  local prompt_repeat_note = config.org_log_repeat == 'note'
+  local log_repeat_enabled = config.org_log_repeat ~= false
+  local repeat_note_template = ('%s- State "%s" from "%s" [%s]'):format(
+    indent,
+    new_todo,
+    old_state,
+    Date.now():to_string()
+  )
 
-      return self.capture.closing_note:open():next(function(closing_note)
-        return get_note(closing_note)
-      end)
+  if log_repeat_enabled then
+    item:set_property('LAST_REPEAT', Date.now():to_wrapped_string(false))
+  end
+
+  if not prompt_repeat_note and not prompt_done_note then
+    -- If user is not prompted for a note, use a default repeat note
+    if log_repeat_enabled then
+      return item:add_note({ repeat_note_template })
+    end
+    return item
+  end
+
+  -- Done note has precedence over repeat note
+  if prompt_done_note then
+    return get_note(closing_note_text):next(function(closing_note)
+      return item:add_note(closing_note)
     end)
-    :next(function(note)
-      headline:set_property('LAST_REPEAT', Date.now():to_wrapped_string(false))
-      if not note then
-        return
-      end
-      local drawer = config.org_log_into_drawer
-      local append_line
-      if drawer ~= nil then
-        append_line = headline:get_drawer_append_line(drawer)
-      else
-        append_line = headline:get_append_line()
-      end
-      vim.api.nvim_buf_set_lines(0, append_line, append_line, false, note)
-    end)
+  end
+
+  return get_note(repeat_note_template .. ' \\\\'):next(function(closing_note)
+    return item:add_note(closing_note)
+  end)
 end
 
 function OrgMappings:do_promote(whole_subtree)
@@ -651,6 +656,11 @@ function OrgMappings:meta_return(suffix)
     end
 
     if #text_edits > 0 then
+      -- Fix sorting for same position edits
+      -- See: https://github.com/neovim/neovim/commit/2ce4a4d91e4abee0aab8b98c47eea9fbd4849ba6
+      if vim.fn.has('nvim-0.11') > 0 then
+        text_edits = utils.reverse(text_edits)
+      end
       vim.lsp.util.apply_text_edits(text_edits, vim.api.nvim_get_current_buf(), constants.default_offset_encoding)
 
       vim.fn.cursor(end_row + 1 + (add_empty_line and 1 or 0), 1) -- +1 for next line
@@ -736,50 +746,7 @@ function OrgMappings:insert_link()
     return
   end
 
-  local selected_link = Link:new(link_location)
-  local desc = selected_link.url:get_target_value()
-  if selected_link.url:is_id() then
-    local id_link = ('id:%s'):format(selected_link.url:get_id())
-    desc = link_location:gsub('^' .. vim.pesc(id_link) .. '%s+', '')
-    link_location = id_link
-  end
-
-  local link_description = vim.trim(vim.fn.OrgmodeInput('Description: ', desc or ''))
-
-  link_location = '[' .. vim.trim(link_location) .. ']'
-
-  if link_description ~= '' then
-    link_description = '[' .. link_description .. ']'
-  end
-
-  local insert_from
-  local insert_to
-  local target_col = #link_location + #link_description + 2
-
-  -- check if currently on link
-  local link, position = self:_get_link_under_cursor()
-  if link and position then
-    insert_from = position.from - 1
-    insert_to = position.to + 1
-    target_col = target_col + position.from
-  else
-    local colnr = vim.fn.col('.')
-    insert_from = colnr
-    insert_to = colnr + 1
-    target_col = target_col + colnr
-  end
-
-  local linenr = vim.fn.line('.') or 0
-  local curr_line = vim.fn.getline(linenr)
-  local new_line = string.sub(curr_line, 0, insert_from)
-    .. '['
-    .. link_location
-    .. link_description
-    .. ']'
-    .. string.sub(curr_line, insert_to, #curr_line)
-
-  vim.fn.setline(linenr, new_line)
-  vim.fn.cursor(linenr, target_col)
+  Hyperlinks.insert_link(link_location)
 end
 
 function OrgMappings:store_link()
@@ -795,7 +762,14 @@ function OrgMappings:move_subtree_up()
     return utils.echo_warning('Cannot move past superior level.')
   end
   local range = item:get_range()
-  vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, prev_headline:get_range().start_line - 1))
+  local target_line = prev_headline:get_range().start_line - 1
+  local foldclosed = vim.fn.foldclosed('.')
+  vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, target_line))
+  local pos = vim.fn.getcurpos()
+  vim.fn.cursor(target_line + 1, pos[2])
+  if foldclosed > -1 and vim.fn.foldclosed('.') == -1 then
+    vim.cmd([[norm!zc]])
+  end
 end
 
 function OrgMappings:move_subtree_down()
@@ -805,7 +779,14 @@ function OrgMappings:move_subtree_down()
     return utils.echo_warning('Cannot move past superior level.')
   end
   local range = item:get_range()
-  vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, next_headline:get_range().end_line))
+  local target_line = next_headline:get_range().end_line
+  local foldclosed = vim.fn.foldclosed('.')
+  vim.cmd(string.format(':%d,%dmove %d', range.start_line, range.end_line, target_line))
+  local pos = vim.fn.getcurpos()
+  vim.fn.cursor(target_line + range.start_line - range.end_line, pos[2])
+  if foldclosed > -1 and vim.fn.foldclosed('.') == -1 then
+    vim.cmd([[norm!zc]])
+  end
 end
 
 function OrgMappings:show_help(type)
@@ -823,7 +804,7 @@ function OrgMappings:_edit_special_callback()
 end
 
 function OrgMappings:open_at_point()
-  local link = self:_get_link_under_cursor()
+  local link = Hyperlinks.get_link_under_cursor()
   if not link then
     local date = self:_get_date_under_cursor()
     if date then
@@ -1020,6 +1001,16 @@ function OrgMappings:org_time_stamp(inactive)
   end)
 end
 
+function OrgMappings:org_toggle_timestamp_type()
+  local date = self:_get_date_under_cursor()
+  if not date then
+    return
+  end
+
+  date.active = not date.active
+  self:_replace_date(date)
+end
+
 ---@param direction string
 ---@param use_fast_access? boolean
 ---@return boolean
@@ -1126,13 +1117,6 @@ function OrgMappings:_adjust_date(amount, span, fallback)
   end
 
   return vim.api.nvim_feedkeys(utils.esc(fallback), 'n', true)
-end
-
----@return OrgLink|nil, table | nil
-function OrgMappings:_get_link_under_cursor()
-  local line = vim.fn.getline('.')
-  local col = vim.fn.col('.') or 0
-  return Link.at_pos(line, col)
 end
 
 ---@param headline OrgHeadline
